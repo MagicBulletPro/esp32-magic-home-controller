@@ -15,8 +15,8 @@ A powerful ESP32-based home automation controller that provides WebSocket and RE
 ## Hardware Configuration
 
 ### Default Relay Setup
-- **Relay 1**: GPIO 18 - "Red LED" (Living room main lighting)
-- **Relay 2**: GPIO 19 - "Green LED" (Master bedroom tube light)
+- **Relay 1**: GPIO 18 - "Living Light" (Living room main lighting)
+- **Relay 2**: GPIO 19 - "Bedroom Light" (Master bedroom tube light)
 - **Status LED**: GPIO 2 - Built-in LED for connection status
 
 ### Wi-Fi Configuration
