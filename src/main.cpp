@@ -9,7 +9,7 @@ const char *ssid = "Your-WiFi-SSID";
 const char *password = "Your-WiFi-Password";
 
 // Device information
-const char *deviceName = "ESP32 Controller";
+const char *deviceName = "ESP32_Controller";
 const char *deviceType = "home_automation";
 
 // Relay structure for multiple relay management
