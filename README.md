@@ -353,7 +353,7 @@ Update the `pin` values in the relay configuration array.
 ## Network Discovery
 
 The device supports mDNS for automatic discovery:
-- Device name: `ESP32 Controller.local`
+- Device name: `ESP32_Controller.local`
 - Services: HTTP (port 80), WebSocket (port 80)
 
 ## Troubleshooting
