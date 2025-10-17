@@ -7,11 +7,11 @@
 
 // DHT Sensor Configuration
 #define DHTPIN 4          // GPIO pin connected to DHT sensor
-#define DHTTYPE DHT22     // DHT22 (AM2302) sensor type
+#define DHTTYPE DHT11     // DHT22 (AM2302) sensor type
 
 // Wi-Fi credentials
-const char *ssid = "Your-WiFi-SSID";
-const char *password = "Your-WiFi-Password";
+const char *ssid = "Magic-Bullet";
+const char *password = "Chickoos@1989";
 
 // Device information
 const char *deviceName = "ESP32_Controller";
@@ -45,9 +45,12 @@ struct SensorData {
   float humidity;
   unsigned long lastUpdate;
   bool valid;
+  bool connected;
+  int failedReadCount;
+  String errorMessage;
 };
 
-SensorData sensorData = {0.0, 0.0, 0, false};
+SensorData sensorData = {0.0, 0.0, 0, false, false, 0, ""};
 
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
@@ -96,17 +99,38 @@ void readSensorData() {
   float t = dht.readTemperature(); // Celsius
   
   if (isnan(h) || isnan(t)) {
-    Serial.println("Failed to read from DHT sensor!");
-    sensorData.valid = false;
+    sensorData.failedReadCount++;
+    
+    if (sensorData.failedReadCount >= 3) {
+      // After 3 consecutive failures, mark sensor as disconnected
+      sensorData.connected = false;
+      sensorData.valid = false;
+      sensorData.errorMessage = "Sensor not connected or failed to read";
+      
+      if (sensorData.failedReadCount == 3) {
+        Serial.println("⚠ DHT sensor disconnected or not responding!");
+        Serial.println("  Please check:");
+        Serial.println("  - Sensor wiring (VCC, GND, DATA)");
+        Serial.println("  - Power supply");
+        Serial.println("  - Pull-up resistor (10kΩ recommended)");
+      }
+    } else {
+      sensorData.errorMessage = "Temporary read failure, retrying...";
+      Serial.printf("⚠ Failed to read from DHT sensor (attempt %d/3)\n", sensorData.failedReadCount);
+    }
     return;
   }
   
+  // Successful read - reset failure count
+  sensorData.failedReadCount = 0;
+  sensorData.connected = true;
   sensorData.temperature = t;
   sensorData.humidity = h;
   sensorData.lastUpdate = millis();
   sensorData.valid = true;
+  sensorData.errorMessage = "";
   
-  Serial.printf("Temperature: %.2f°C, Humidity: %.2f%%\n", t, h);
+  Serial.printf("✓ Temperature: %.2f°C, Humidity: %.2f%%\n", t, h);
 }
 
 String getSensorDataJson() {
@@ -115,9 +139,24 @@ String getSensorDataJson() {
   json += "\"humidity\":" + String(sensorData.humidity, 2) + ",";
   json += "\"temperature_f\":" + String((sensorData.temperature * 9.0 / 5.0) + 32.0, 2) + ",";
   json += "\"valid\":" + String(sensorData.valid ? "true" : "false") + ",";
+  json += "\"connected\":" + String(sensorData.connected ? "true" : "false") + ",";
   json += "\"last_update\":" + String(sensorData.lastUpdate);
+  
+  if (!sensorData.connected || !sensorData.valid) {
+    json += ",\"error\":\"" + sensorData.errorMessage + "\"";
+  }
+  
   json += "}";
   return json;
+}
+
+// Broadcast sensor data to all connected WebSocket clients
+void broadcastSensorData() {
+  if (ws.count() > 0) {
+    String sensorJson = getSensorDataJson();
+    ws.textAll(sensorJson);
+    Serial.println("📡 Sensor data broadcasted to " + String(ws.count()) + " client(s)");
+  }
 }
 
 // Handle incoming WebSocket messages
@@ -335,13 +374,29 @@ void setup()
   Serial.println("Initializing DHT sensor...");
   dht.begin();
   delay(2000); // Wait for sensor to stabilize
-  readSensorData();
-  if (sensorData.valid) {
-    Serial.println("✓ DHT sensor initialized successfully");
-    Serial.printf("  Initial reading - Temp: %.2f°C, Humidity: %.2f%%\n", 
-                  sensorData.temperature, sensorData.humidity);
-  } else {
-    Serial.println("⚠ DHT sensor initialization failed - sensor data may be unavailable");
+  
+  // Try to read sensor 3 times to verify connection
+  for (int i = 0; i < 3; i++) {
+    readSensorData();
+    if (sensorData.valid) {
+      Serial.println("✓ DHT sensor initialized successfully");
+      Serial.printf("  Initial reading - Temp: %.2f°C, Humidity: %.2f%%\n", 
+                    sensorData.temperature, sensorData.humidity);
+      sensorData.connected = true;
+      break;
+    }
+    if (i < 2) {
+      Serial.printf("  Retry %d/3...\n", i + 2);
+      delay(1000);
+    }
+  }
+  
+  if (!sensorData.valid) {
+    Serial.println("⚠ DHT sensor not detected!");
+    Serial.println("  System will continue without sensor data.");
+    Serial.println("  Sensor readings will show 'disconnected' status.");
+    sensorData.connected = false;
+    sensorData.errorMessage = "Sensor not detected at startup";
   }
 
   // Connect to Wi-Fi
@@ -420,11 +475,14 @@ void setup()
     html += "<p>WebSocket: ws://" + WiFi.localIP().toString() + "/ws</p>";
     
     html += "<h2>Temperature & Humidity:</h2>";
-    if (sensorData.valid) {
+    if (sensorData.connected && sensorData.valid) {
+      html += "<p style='color:green;'>✓ Sensor Connected</p>";
       html += "<p>Temperature: " + String(sensorData.temperature, 1) + "°C (" + String((sensorData.temperature * 9.0 / 5.0) + 32.0, 1) + "°F)</p>";
       html += "<p>Humidity: " + String(sensorData.humidity, 1) + "%</p>";
     } else {
-      html += "<p>Sensor data unavailable</p>";
+      html += "<p style='color:red;'>✗ Sensor Disconnected</p>";
+      html += "<p>Error: " + sensorData.errorMessage + "</p>";
+      html += "<p>Please check sensor wiring and power supply.</p>";
     }
     
     html += "<h2>Relay Status:</h2>";
@@ -576,6 +634,14 @@ void loop()
     lastSensorRead = millis();
   }
 
+  // Broadcast sensor data to WebSocket clients every 10 seconds (if connected)
+  static unsigned long lastSensorBroadcast = 0;
+  if (millis() - lastSensorBroadcast > 10000)
+  {
+    broadcastSensorData();
+    lastSensorBroadcast = millis();
+  }
+
   // Handle any pending tasks
   delay(10);
 
@@ -592,8 +658,10 @@ void loop()
         Serial.print(", ");
       Serial.print("R" + String(i + 1) + ":" + String(relays[i].state ? "ON" : "OFF"));
     }
-    if (sensorData.valid) {
+    if (sensorData.valid && sensorData.connected) {
       Serial.printf(", Temp: %.1f°C, Humidity: %.1f%%", sensorData.temperature, sensorData.humidity);
+    } else {
+      Serial.print(", Sensor: DISCONNECTED");
     }
     Serial.print(", Free heap: ");
     Serial.print(ESP.getFreeHeap());
