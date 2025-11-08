@@ -3,13 +3,18 @@
 #include <ESPAsyncWebServer.h>
 #include <ArduinoJson.h>
 #include <ESPmDNS.h>
+#include <DHT.h>
+
+// DHT Sensor Configuration
+#define DHTPIN 4          // GPIO pin connected to DHT sensor
+#define DHTTYPE DHT11     // DHT sensor type (DHT11 or DHT22/AM2302)
 
 // Wi-Fi credentials
 const char *ssid = "Your-WiFi-SSID";
 const char *password = "Your-WiFi-Password";
 
 // Device information
-const char *deviceName = "ESP32_Controller";
+const char *deviceName = "esp32_controller";
 const char *deviceType = "home_automation";
 
 // Relay structure for multiple relay management
@@ -30,6 +35,22 @@ Relay relays[NUM_RELAYS] = {
 
 // Status LED pin
 const int statusLED = 2; // Built-in LED for status indication
+
+// DHT Sensor instance
+DHT dht(DHTPIN, DHTTYPE);
+
+// Sensor data
+struct SensorData {
+  float temperature;
+  float humidity;
+  unsigned long lastUpdate;
+  bool valid;
+  bool connected;
+  int failedReadCount;
+  String errorMessage;
+};
+
+SensorData sensorData = {0.0, 0.0, 0, false, false, 0, ""};
 
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
@@ -70,6 +91,72 @@ String getRelayStatusJson()
   }
   json += "]}";
   return json;
+}
+
+// Temperature sensor functions
+void readSensorData() {
+  float h = dht.readHumidity();
+  float t = dht.readTemperature(); // Celsius
+  
+  if (isnan(h) || isnan(t)) {
+    sensorData.failedReadCount++;
+    
+    if (sensorData.failedReadCount >= 3) {
+      // After 3 consecutive failures, mark sensor as disconnected
+      sensorData.connected = false;
+      sensorData.valid = false;
+      sensorData.errorMessage = "Sensor not connected or failed to read";
+      
+      if (sensorData.failedReadCount == 3) {
+        Serial.println("⚠ DHT sensor disconnected or not responding!");
+        Serial.println("  Please check:");
+        Serial.println("  - Sensor wiring (VCC, GND, DATA)");
+        Serial.println("  - Power supply");
+        Serial.println("  - Pull-up resistor (10kΩ recommended)");
+      }
+    } else {
+      sensorData.errorMessage = "Temporary read failure, retrying...";
+      Serial.printf("⚠ Failed to read from DHT sensor (attempt %d/3)\n", sensorData.failedReadCount);
+    }
+    return;
+  }
+  
+  // Successful read - reset failure count
+  sensorData.failedReadCount = 0;
+  sensorData.connected = true;
+  sensorData.temperature = t;
+  sensorData.humidity = h;
+  sensorData.lastUpdate = millis();
+  sensorData.valid = true;
+  sensorData.errorMessage = "";
+  
+  Serial.printf("✓ Temperature: %.2f°C, Humidity: %.2f%%\n", t, h);
+}
+
+String getSensorDataJson() {
+  String json = "{";
+  json += "\"temperature\":" + String(sensorData.temperature, 2) + ",";
+  json += "\"humidity\":" + String(sensorData.humidity, 2) + ",";
+  json += "\"temperature_f\":" + String((sensorData.temperature * 9.0 / 5.0) + 32.0, 2) + ",";
+  json += "\"valid\":" + String(sensorData.valid ? "true" : "false") + ",";
+  json += "\"connected\":" + String(sensorData.connected ? "true" : "false") + ",";
+  json += "\"last_update\":" + String(sensorData.lastUpdate);
+  
+  if (!sensorData.connected || !sensorData.valid) {
+    json += ",\"error\":\"" + sensorData.errorMessage + "\"";
+  }
+  
+  json += "}";
+  return json;
+}
+
+// Broadcast sensor data to all connected WebSocket clients
+void broadcastSensorData() {
+  if (ws.count() > 0) {
+    String sensorJson = getSensorDataJson();
+    ws.textAll(sensorJson);
+    Serial.println("📡 Sensor data broadcasted to " + String(ws.count()) + " client(s)");
+  }
 }
 
 // Handle incoming WebSocket messages
@@ -167,6 +254,14 @@ void onWebSocketMessage(void *arg, uint8_t *data, size_t len)
         Serial.println("✓ All relay status sent");
         return;
       }
+      else if (action == "get_sensor" || action == "sensor" || action == "temperature")
+      {
+        // Get sensor data
+        readSensorData();
+        ws.textAll(getSensorDataJson());
+        Serial.println("✓ Sensor data sent");
+        return;
+      }
       else if (action == "all_on" || action == "turn_all_on")
       {
         // Turn on all relays
@@ -191,7 +286,7 @@ void onWebSocketMessage(void *arg, uint8_t *data, size_t len)
       }
       else
       {
-        ws.textAll("{\"status\":\"error\",\"message\":\"Invalid action\",\"valid_actions\":[\"on\",\"off\",\"toggle\",\"status\",\"all_on\",\"all_off\"]}");
+        ws.textAll("{\"status\":\"error\",\"message\":\"Invalid action\",\"valid_actions\":[\"on\",\"off\",\"toggle\",\"status\",\"sensor\",\"all_on\",\"all_off\"]}");
         return;
       }
     }
@@ -275,6 +370,35 @@ void setup()
   Serial.print("Status LED: GPIO ");
   Serial.println(statusLED);
 
+  // Initialize DHT sensor
+  Serial.println("Initializing DHT sensor...");
+  dht.begin();
+  delay(2000); // Wait for sensor to stabilize
+  
+  // Try to read sensor 3 times to verify connection
+  for (int i = 0; i < 3; i++) {
+    readSensorData();
+    if (sensorData.valid) {
+      Serial.println("✓ DHT sensor initialized successfully");
+      Serial.printf("  Initial reading - Temp: %.2f°C, Humidity: %.2f%%\n", 
+                    sensorData.temperature, sensorData.humidity);
+      sensorData.connected = true;
+      break;
+    }
+    if (i < 2) {
+      Serial.printf("  Retry %d/3...\n", i + 2);
+      delay(1000);
+    }
+  }
+  
+  if (!sensorData.valid) {
+    Serial.println("⚠ DHT sensor not detected!");
+    Serial.println("  System will continue without sensor data.");
+    Serial.println("  Sensor readings will show 'disconnected' status.");
+    sensorData.connected = false;
+    sensorData.errorMessage = "Sensor not detected at startup";
+  }
+
   // Connect to Wi-Fi
   WiFi.begin(ssid, password);
   Serial.print("Connecting to Wi-Fi network: ");
@@ -344,10 +468,23 @@ void setup()
   // Add HTTP endpoints for device discovery and status
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
             {
+    readSensorData();
     String html = "<html><body><h1>ESP32 Home Controller</h1>";
     html += "<p>Device: " + String(deviceName) + "</p>";
     html += "<p>IP: " + WiFi.localIP().toString() + "</p>";
     html += "<p>WebSocket: ws://" + WiFi.localIP().toString() + "/ws</p>";
+    
+    html += "<h2>Temperature & Humidity:</h2>";
+    if (sensorData.connected && sensorData.valid) {
+      html += "<p style='color:green;'>✓ Sensor Connected</p>";
+      html += "<p>Temperature: " + String(sensorData.temperature, 1) + "°C (" + String((sensorData.temperature * 9.0 / 5.0) + 32.0, 1) + "°F)</p>";
+      html += "<p>Humidity: " + String(sensorData.humidity, 1) + "%</p>";
+    } else {
+      html += "<p style='color:red;'>✗ Sensor Disconnected</p>";
+      html += "<p>Error: " + sensorData.errorMessage + "</p>";
+      html += "<p>Please check sensor wiring and power supply.</p>";
+    }
+    
     html += "<h2>Relay Status:</h2>";
     for (int i = 0; i < NUM_RELAYS; i++) {
       html += "<p>" + relays[i].name + " (GPIO " + String(relays[i].pin) + "): " + String(relays[i].state ? "ON" : "OFF") + "</p>";
@@ -357,12 +494,14 @@ void setup()
 
   server.on("/info", HTTP_GET, [](AsyncWebServerRequest *request)
             {
+    readSensorData();
     String json = "{";
     json += "\"device_name\":\"" + String(deviceName) + "\",";
     json += "\"device_type\":\"" + String(deviceType) + "\",";
     json += "\"ip_address\":\"" + WiFi.localIP().toString() + "\",";
     json += "\"mac_address\":\"" + WiFi.macAddress() + "\",";
     json += "\"num_relays\":" + String(NUM_RELAYS) + ",";
+    json += "\"sensor\":" + getSensorDataJson() + ",";
     json += "\"relays\":" + getRelayStatusJson().substring(10, getRelayStatusJson().length() - 1);
     json += "}";
     request->send(200, "application/json", json); });
@@ -370,6 +509,12 @@ void setup()
   // API endpoints for relay management
   server.on("/api/relays", HTTP_GET, [](AsyncWebServerRequest *request)
             { request->send(200, "application/json", getRelayStatusJson()); });
+
+  // API endpoint for sensor data
+  server.on("/api/sensor", HTTP_GET, [](AsyncWebServerRequest *request)
+            { 
+    readSensorData();
+    request->send(200, "application/json", getSensorDataJson()); });
 
   server.on("/api/relay", HTTP_GET, [](AsyncWebServerRequest *request)
             {
@@ -462,9 +607,12 @@ void setup()
   Serial.println("    {\"action\":\"all_on\"}");
   Serial.println("    {\"action\":\"all_off\"}");
   Serial.println("    {\"action\":\"status\"}");
+  Serial.println("  Sensor:");
+  Serial.println("    {\"action\":\"sensor\"}");
   Serial.println("API Endpoints:");
   Serial.println("  - GET /api/relays - Get all relay status");
   Serial.println("  - GET /api/relay?id=N - Get specific relay status");
+  Serial.println("  - GET /api/sensor - Get temperature and humidity");
   Serial.println("  - POST /api/relay/control?id=N&action=on/off/toggle");
   Serial.println("  - POST /api/relays/all?action=on/off");
   Serial.print("WebSocket URL: ws://");
@@ -477,6 +625,22 @@ void loop()
 {
   // Clean up WebSocket connections
   ws.cleanupClients();
+
+  // Read sensor data every 5 seconds
+  static unsigned long lastSensorRead = 0;
+  if (millis() - lastSensorRead > 5000)
+  {
+    readSensorData();
+    lastSensorRead = millis();
+  }
+
+  // Broadcast sensor data to WebSocket clients every 10 seconds (if connected)
+  static unsigned long lastSensorBroadcast = 0;
+  if (millis() - lastSensorBroadcast > 10000)
+  {
+    broadcastSensorData();
+    lastSensorBroadcast = millis();
+  }
 
   // Handle any pending tasks
   delay(10);
@@ -493,6 +657,11 @@ void loop()
       if (i > 0)
         Serial.print(", ");
       Serial.print("R" + String(i + 1) + ":" + String(relays[i].state ? "ON" : "OFF"));
+    }
+    if (sensorData.valid && sensorData.connected) {
+      Serial.printf(", Temp: %.1f°C, Humidity: %.1f%%", sensorData.temperature, sensorData.humidity);
+    } else {
+      Serial.print(", Sensor: DISCONNECTED");
     }
     Serial.print(", Free heap: ");
     Serial.print(ESP.getFreeHeap());

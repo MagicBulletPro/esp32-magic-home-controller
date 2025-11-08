@@ -5,11 +5,12 @@ A powerful ESP32-based home automation controller that provides WebSocket and RE
 ## Features
 
 - **Multi-Relay Control**: Support for multiple relays with individual control
+- **Temperature & Humidity Monitoring**: DHT22 sensor integration for environmental monitoring
 - **WebSocket Interface**: Real-time bidirectional communication
 - **REST API**: Standard HTTP endpoints for easy integration
 - **JSON Protocol**: Modern, structured command format
 - **mDNS Discovery**: Automatic device discovery on local network
-- **Status Monitoring**: Real-time relay status reporting
+- **Status Monitoring**: Real-time relay and sensor status reporting
 - **CORS Enabled**: Ready for web and mobile app integration
 
 ## Hardware Configuration
@@ -18,6 +19,10 @@ A powerful ESP32-based home automation controller that provides WebSocket and RE
 - **Relay 1**: GPIO 18 - "Living Light" (Living room main lighting)
 - **Relay 2**: GPIO 19 - "Bedroom Light" (Master bedroom tube light)
 - **Status LED**: GPIO 2 - Built-in LED for connection status
+
+### Temperature Sensor Setup
+- **DHT22 Sensor**: GPIO 4 - Temperature and humidity monitoring
+- See [TEMPERATURE_SENSOR.md](TEMPERATURE_SENSOR.md) for detailed setup instructions
 
 ### Wi-Fi Configuration
 Update the credentials in `main.cpp`:
@@ -127,6 +132,29 @@ All WebSocket commands use JSON format:
 }
 ```
 
+#### Sensor Data Query
+```json
+{
+  "action": "sensor"
+}
+```
+
+**Alternative commands:** `"get_sensor"`, `"temperature"`
+
+**Response:**
+```json
+{
+  "temperature": 23.50,
+  "humidity": 45.30,
+  "temperature_f": 74.30,
+  "valid": true,
+  "last_update": 12345678
+}
+```
+  ]
+}
+```
+
 ### REST API
 
 Base URL: `http://[ESP32_IP]`
@@ -147,6 +175,13 @@ Returns device information and relay status
   "ip_address": "192.168.1.100",
   "mac_address": "AA:BB:CC:DD:EE:FF",
   "num_relays": 2,
+  "sensor": {
+    "temperature": 23.50,
+    "humidity": 45.30,
+    "temperature_f": 74.30,
+    "valid": true,
+    "last_update": 12345678
+  },
   "relays": [
     {
       "id": 1,
@@ -158,6 +193,29 @@ Returns device information and relay status
   ]
 }
 ```
+
+#### Sensor Data
+
+##### GET /api/sensor
+Get current temperature and humidity readings
+
+**Response:**
+```json
+{
+  "temperature": 23.50,
+  "humidity": 45.30,
+  "temperature_f": 74.30,
+  "valid": true,
+  "last_update": 12345678
+}
+```
+
+**Fields:**
+- `temperature`: Temperature in Celsius
+- `humidity`: Relative humidity percentage
+- `temperature_f`: Temperature in Fahrenheit
+- `valid`: Whether the reading is valid
+- `last_update`: Timestamp of last sensor read (milliseconds)
 
 #### Relay Management
 
