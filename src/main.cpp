@@ -7,14 +7,14 @@
 
 // DHT Sensor Configuration
 #define DHTPIN 4          // GPIO pin connected to DHT sensor
-#define DHTTYPE DHT11     // DHT22 (AM2302) sensor type
+#define DHTTYPE DHT11     // DHT sensor type (DHT11 or DHT22/AM2302)
 
 // Wi-Fi credentials
-const char *ssid = "Magic-Bullet";
-const char *password = "Chickoos@1989";
+const char *ssid = "Your-WiFi-SSID";
+const char *password = "Your-WiFi-Password";
 
 // Device information
-const char *deviceName = "ESP32_Controller";
+const char *deviceName = "esp32_controller";
 const char *deviceType = "home_automation";
 
 // Relay structure for multiple relay management
